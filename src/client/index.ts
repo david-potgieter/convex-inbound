@@ -193,7 +193,7 @@ export class Inbound {
     ctx: GenericQueryCtx<GenericDataModel> | GenericActionCtx<GenericDataModel>,
     emailId: string
   ): Promise<{
-    status: "queued" | "sent" | "failed" | "cancelled";
+    status: "queued" | "processing" | "sent" | "failed" | "cancelled";
     failed: boolean;
     bounced: boolean;
     complained: boolean;

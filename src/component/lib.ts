@@ -4,6 +4,7 @@ import {
   internalMutation,
   mutation,
   query,
+  type MutationCtx,
 } from "./_generated/server.js";
 import { Workpool } from "@convex-dev/workpool";
 import { RateLimiter } from "@convex-dev/rate-limiter";
@@ -14,6 +15,8 @@ import { Inbound } from "@inboundemail/sdk";
 const SEGMENT_MS = 125;
 const EMAIL_POOL_SIZE = 4;
 const INBOUND_ONE_CALL_EVERY_MS = 100; // Rate limit safety
+const BATCH_SIZE = 50;
+const BASE_BATCH_DELAY = 100; // Buffer for bursts
 
 const emailWorkpool = new Workpool(components.emailWorkpool as any, {
   maxParallelism: EMAIL_POOL_SIZE,
@@ -86,10 +89,8 @@ export const sendEmail = mutation({
       status: "queued",
       segment: getSegment(now),
     });
-    await ctx.scheduler.runAfter(0, internal.lib.processQueue, {
-      segment: getSegment(now),
-      apiKey,
-    });
+
+    await scheduleBatchRun(ctx, apiKey);
     return emailId;
   },
 });
@@ -124,37 +125,74 @@ export const replyEmail = mutation({
       segment: getSegment(now),
     });
 
-    await ctx.scheduler.runAfter(0, internal.lib.processQueue, {
-      segment: getSegment(now),
-      apiKey: args.apiKey,
-    });
+    await scheduleBatchRun(ctx, args.apiKey);
     return emailId;
   },
 });
 
-export const processQueue = internalMutation({
+/**
+ * Singleton batch scheduler.
+ * Ensures only one "makeBatch" is scheduled/running at a time.
+ */
+async function scheduleBatchRun(ctx: MutationCtx, apiKey?: string) {
+  // Check if worker running
+  const existing = await ctx.db.query("nextBatchRun").unique();
+  if (existing) return;
+
+  // Schedule new one
+  const runId = await ctx.scheduler.runAfter(BASE_BATCH_DELAY, internal.lib.makeBatch, {
+    apiKey
+  });
+  await ctx.db.insert("nextBatchRun", { runId });
+}
+
+/**
+ * The Singleton Worker.
+ * Picks up queued emails and sends them to the workpool.
+ * Re-schedules itself if there is more work.
+ */
+export const makeBatch = internalMutation({
   args: {
-    segment: v.number(),
     apiKey: v.optional(v.string()),
   },
   handler: async (ctx, args) => {
+    // 1. Fetch a batch of queued emails
     const emails = await ctx.db
       .query("outbound_emails")
-      .withIndex("by_status_segment", (q) =>
-        q.eq("status", "queued").eq("segment", args.segment)
-      )
-      .take(100); // Limit batch size
+      .withIndex("by_status_segment", (q) => q.eq("status", "queued"))
+      .take(BATCH_SIZE);
 
-    if (emails.length === 0) return;
+    if (emails.length === 0) {
+      // No work? Delete lock and exit.
+      const existing = await ctx.db.query("nextBatchRun").unique();
+      if (existing) await ctx.db.delete(existing._id);
+      return;
+    }
 
-    // Batch emails into groups (max 10 per batch for efficiency)
-    const BATCH_SIZE = 10;
-    for (let i = 0; i < emails.length; i += BATCH_SIZE) {
-      const batchIds = emails.slice(i, i + BATCH_SIZE).map(e => e._id);
-      await emailWorkpool.enqueueAction(ctx, internal.lib.performBatchSend, {
-        emailIds: batchIds,
-        apiKey: args.apiKey,
-      });
+    // 2. Mark as processing (lock them)
+    const emailIds = [];
+    for (const email of emails) {
+      await ctx.db.patch(email._id, { status: "processing" });
+      emailIds.push(email._id);
+    }
+
+    // 3. Enqueue action
+    await emailWorkpool.enqueueAction(ctx, internal.lib.performBatchSend, {
+      emailIds,
+      apiKey: args.apiKey,
+    });
+
+    // 4. Re-schedule self immediately to drain queue (Recursive loop)
+    const runId = await ctx.scheduler.runAfter(0, internal.lib.makeBatch, {
+      apiKey: args.apiKey,
+    });
+
+    // Update lock with new runId
+    const existing = await ctx.db.query("nextBatchRun").unique();
+    if (existing) {
+      await ctx.db.patch(existing._id, { runId });
+    } else {
+      await ctx.db.insert("nextBatchRun", { runId });
     }
   },
 });
@@ -182,7 +220,8 @@ export const performBatchSend = internalAction({
     // Process each email in the batch
     for (const emailId of args.emailIds) {
       const email = await ctx.runQuery(api.lib.getEmailById, { emailId });
-      if (!email || email.status !== "queued") continue;
+      // Only process if it's in the 'processing' state (locked by the mutation)
+      if (!email || email.status !== "processing") continue;
 
       // Rate limit between emails
       const limit = await inboundApiRateLimiter.limit(ctx, "inboundApi", {
@@ -225,6 +264,20 @@ export const performBatchSend = internalAction({
           inboundId: response.data?.id,
         });
       } catch (e: any) {
+        const msg = e.message || "";
+        // Temporary errors that should trigger a retry
+        if (
+          msg.includes("Rate limit exceeded") ||
+          msg.includes("Unauthorized") ||
+          msg.includes("500") ||
+          msg.includes("502") ||
+          msg.includes("503") ||
+          msg.includes("504")
+        ) {
+          console.error(`Temporary failure sending email ${emailId}: ${msg}. Retrying...`);
+          throw e; // Let Convex handle the retry with backoff
+        }
+
         await ctx.runMutation(internal.lib.updateEmailStatus, {
           emailId,
           status: "failed",
@@ -338,7 +391,12 @@ export const cleanupAbandonedEmails = internalMutation({
 
     const abandonedEmails = await ctx.db
       .query("outbound_emails")
-      .filter((q) => q.eq(q.field("status"), "queued"))
+      .filter((q) =>
+        q.or(
+          q.eq(q.field("status"), "queued"),
+          q.eq(q.field("status"), "processing")
+        )
+      )
       .take(500);
 
     let deleted = 0;

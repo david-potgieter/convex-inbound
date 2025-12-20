@@ -2,6 +2,14 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.1.2] - 2024-12-21
+
+### Improved
+- **Durable Execution & Concurrency**: Switched to a Singleton Worker (pulse) pattern for email batching. This eliminates race conditions under high load and ensures strictly ordered execution.
+- **Robust Retry Logic**: The component now correctly identifies temporary errors (Rate Limits, 401s, 500s) and throws them, allowing Convex's built-in scheduler to retry with exponential backoff.
+- **Processing Safety**: Introduced a `processing` lock state to prevent duplicate processing of the same email by concurrent workers.
+- **Cleanup**: Updated `cleanupAbandonedEmails` to handle emails stuck in the `processing` state.
+
 ## [0.1.1] - 2024-12-21
 
 - Fixed repository URL in package.json

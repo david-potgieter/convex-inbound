@@ -54,4 +54,7 @@ export default defineSchema({
   })
     .index("by_emailId", ["emailId"])
     .index("by_inboundId", ["inboundId"]),
+  nextBatchRun: defineTable({
+    runId: v.id("_scheduled_functions"),
+  }),
 });

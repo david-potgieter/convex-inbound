@@ -2,6 +2,7 @@ import { v, type Infer } from "convex/values";
 
 export const vStatus = v.union(
     v.literal("queued"),
+    v.literal("processing"),
     v.literal("sent"),
     v.literal("failed"),
     v.literal("cancelled")
