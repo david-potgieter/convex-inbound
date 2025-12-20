@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.1.3] - 2024-12-21
+
+### Optimized
+- **Parallel Processing**: The batch worker now splits jobs into smaller chunks (10 emails) to fully utilize the worker pool (4 concurrent threads). This significantly increases throughput for large queues.
+
 ## [0.1.2] - 2024-12-21
 
 ### Improved

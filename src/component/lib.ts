@@ -176,11 +176,15 @@ export const makeBatch = internalMutation({
       emailIds.push(email._id);
     }
 
-    // 3. Enqueue action
-    await emailWorkpool.enqueueAction(ctx, internal.lib.performBatchSend, {
-      emailIds,
-      apiKey: args.apiKey,
-    });
+    // 3. Enqueue actions in chunks to utilize parallelism
+    const CHUNK_SIZE = 10;
+    for (let i = 0; i < emailIds.length; i += CHUNK_SIZE) {
+      const chunk = emailIds.slice(i, i + CHUNK_SIZE);
+      await emailWorkpool.enqueueAction(ctx, internal.lib.performBatchSend, {
+        emailIds: chunk,
+        apiKey: args.apiKey,
+      });
+    }
 
     // 4. Re-schedule self immediately to drain queue (Recursive loop)
     const runId = await ctx.scheduler.runAfter(0, internal.lib.makeBatch, {
