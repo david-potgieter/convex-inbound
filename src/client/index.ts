@@ -4,7 +4,8 @@ import type {
   FunctionReturnType,
 } from "convex/server";
 import type { ComponentApi } from "../component/_generated/component.js";
-import type { InboundEmail, OutboundEmail, EmailOptions, InboundOptions, Attachment, InboundAttachment, EmailEvent, DeliveryEvent, InboundWebhookPayload } from "../component/shared.js";
+import type { InboundEmail, OutboundEmail, EmailOptions, InboundOptions, Attachment, InboundAttachment, EmailEvent, DeliveryEvent } from "../component/shared.js";
+import type { InboundWebhookPayload } from "inboundemail";
 import { vEmailEvent } from "../component/shared.js";
 
 export type { InboundEmail, OutboundEmail, EmailOptions, InboundOptions, Attachment, InboundAttachment, EmailEvent, DeliveryEvent };
